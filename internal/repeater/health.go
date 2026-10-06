@@ -41,11 +41,14 @@ func (p *HealthProjector) ApplySample(_ context.Context, sample telemetry.Sample
 	if repeater == nil {
 		return nil
 	}
-	before := repeater.Snapshot()
-	if sample.Sequence <= before.LastSequence || sample.Generation < before.TripGeneration {
-		return nil
-	}
+	tripped := false
 	after := repeater.update(func(current *Snapshot) {
+		if sample.Sequence <= current.LastSequence ||
+			sample.Generation < current.TripGeneration ||
+			sample.ObservedAt.UTC().Before(current.UpdatedAt) {
+			return
+		}
+		wasTripped := current.Health == HealthTripped
 		current.LastSequence = sample.Sequence
 		current.TemperatureC = sample.Value
 		current.UpdatedAt = sample.ObservedAt.UTC()
@@ -55,8 +58,9 @@ func (p *HealthProjector) ApplySample(_ context.Context, sample telemetry.Sample
 		} else if current.Health != HealthTripped {
 			current.Health = HealthNormal
 		}
+		tripped = !wasTripped && current.Health == HealthTripped
 	})
-	if before.Health != HealthTripped && after.Health == HealthTripped && p.incidents != nil {
+	if tripped && p.incidents != nil {
 		return p.incidents.OpenRepeaterIncident(after.ID, after.TripGeneration)
 	}
 	return nil
