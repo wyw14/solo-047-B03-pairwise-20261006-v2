@@ -37,15 +37,35 @@ func NewStation(id, name string, at time.Time) (*Station, error) {
 	}}, nil
 }
 
-func (s *Station) Heartbeat(sequence uint64, at time.Time) StationSnapshot {
+// Heartbeat applies a fresh station heartbeat. It returns the resulting
+// snapshot and whether the heartbeat was accepted.
+func (s *Station) Heartbeat(sequence uint64, at time.Time) (StationSnapshot, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sequence > s.snapshot.Sequence {
-		s.snapshot.Sequence = sequence
-		s.snapshot.LastSeenAt = at.UTC()
-		s.snapshot.State = StationOnline
-		s.snapshot.UpdatedAt = at.UTC()
+	at = at.UTC()
+	// Joint freshness guard: a heartbeat must advance both the sequence and
+	// the observed time. A reordered or retransmitted frame can carry a larger
+	// sequence while describing an earlier instant; accepting it would move
+	// LastSeenAt backwards, so the age evaluator would see a fresh heartbeat
+	// long after the station actually went silent.
+	if sequence <= s.snapshot.Sequence || at.Before(s.snapshot.LastSeenAt) {
+		return s.snapshot, false
 	}
+	s.snapshot.Sequence = sequence
+	s.snapshot.LastSeenAt = at
+	s.snapshot.State = StationOnline
+	s.snapshot.UpdatedAt = at
+	return s.snapshot, true
+}
+
+// restore rebuilds the station from a persisted heartbeat. Persisted state is
+// authoritative even though its observed time predates the freshly constructed
+// station, so it bypasses the heartbeat freshness guard.
+func (s *Station) restore(sequence uint64, at time.Time) StationSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshot.Sequence = sequence
+	s.snapshot.LastSeenAt = at.UTC()
 	return s.snapshot
 }
 

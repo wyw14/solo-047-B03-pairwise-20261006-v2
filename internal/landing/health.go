@@ -18,7 +18,12 @@ func NewHealthService(evaluator *telemetry.AgeEvaluator, heartbeats *store.Heart
 }
 
 func (s *HealthService) Record(station *Station, sequence uint64, at time.Time) (StationSnapshot, error) {
-	snapshot := station.Heartbeat(sequence, at)
+	snapshot, accepted := station.Heartbeat(sequence, at)
+	if !accepted {
+		// Stale heartbeat (older sequence or observed time): keep the
+		// established health clock and leave the checkpoint untouched.
+		return snapshot, nil
+	}
 	if err := s.heartbeats.Record(snapshot.ID, snapshot.Sequence, snapshot.LastSeenAt); err != nil {
 		return snapshot, fmt.Errorf("persist landing heartbeat: %w", err)
 	}
@@ -33,7 +38,7 @@ func (s *HealthService) Recover(station *Station) (StationSnapshot, error) {
 	if !found {
 		return station.Snapshot(), nil
 	}
-	return station.Heartbeat(stored.Sequence, stored.SeenAt), nil
+	return station.restore(stored.Sequence, stored.SeenAt), nil
 }
 
 func (s *HealthService) Evaluate(station *Station, at time.Time) StationSnapshot {
